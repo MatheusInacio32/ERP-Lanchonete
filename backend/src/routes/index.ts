@@ -2,7 +2,7 @@
 import { Router, raw } from 'express';
 import {
   ProdutoController, MesaController, PedidoController,
-  CaixaController, ConfiguracaoController,
+  CaixaController, ConfiguracaoController, ImpressaoController,
 } from '../controllers';
 import { BackupController }    from '../controllers/backupController';
 import { RelatorioController } from '../controllers/relatorioController';
@@ -49,6 +49,8 @@ router.get   ('/pedidos/:id',                   PedidoController.buscarPorId);
 router.get ('/caixa',            CaixaController.getAtual);
 router.post('/caixa/abrir',      CaixaController.abrir);
 router.post('/caixa/fechar',     CaixaController.fechar);
+router.post('/caixa/movimentacao', CaixaController.registrarMovimentacao);
+router.get ('/caixa/:id/extrato',  CaixaController.getExtrato);
 router.get ('/caixa/resumo/:id', CaixaController.getResumo);
 router.get ('/caixa/historico',  CaixaController.getHistorico);
 router.get ('/caixa/data',       CaixaController.listarPorData);
@@ -61,6 +63,12 @@ router.post('/backup/restore',
 
 // ── Admin: zerar banco (Zona de Perigo) ───────────────────────
 router.post('/admin/truncate',   BackupController.truncateDatabase);
+
+// ── Impressão silenciosa (PDF direto na impressora) ───────────
+router.get ('/impressao/impressoras', ImpressaoController.listar);
+router.post('/impressao/imprimir',
+  raw({ type: () => true, limit: '32mb' }),  // corpo binário cru (PDF)
+  ImpressaoController.imprimir);
 
 // ── Relatórios ────────────────────────────────────────────────
 router.get('/relatorio/caixa/:id',  RelatorioController.relatorioCaixa);

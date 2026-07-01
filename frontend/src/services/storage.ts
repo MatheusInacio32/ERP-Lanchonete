@@ -42,10 +42,12 @@ export const PedidoService = {
   editarObservacao: (pedidoId: string, itemId: string, observacao: string) =>
     api.patch(`/pedidos/${pedidoId}/itens/${itemId}/obs`, { observacao }),
 
-  fecharConta: (mesaId: string, forma: FormaPagamento, valorRecebido: number) =>
+  fecharConta: (mesaId: string, forma: FormaPagamento, valorRecebido: number, desconto = 0, acrescimo = 0) =>
     api.post<Pedido>(`/mesas/${mesaId}/fechar`, {
       forma_pagamento: forma,
       valor_recebido:  valorRecebido,
+      desconto,
+      acrescimo,
     }),
 
   getHoje: () => {
@@ -67,6 +69,11 @@ export const CaixaService = {
   getResumo:  (caixaId: string) => api.get<RelatorioCaixa>(`/caixa/resumo/${caixaId}`),
   getHistorico: () => api.get<RelatorioCaixa[]>('/caixa/historico'),
   getPorData: (data: string) => api.get<Caixa[]>(`/caixa/data?data=${data}`),
+
+  // Sangria / Suprimento
+  registrarMovimentacao: (tipo: 'sangria' | 'suprimento', valor: number, descricao: string, operador: string) =>
+    api.post('/caixa/movimentacao', { tipo, valor, descricao, operador }),
+  getExtrato: (caixaId: string) => api.get<any[]>(`/caixa/${caixaId}/extrato`),
 };
 
 // ── Configurações ─────────────────────────────────────────────
@@ -107,6 +114,15 @@ export const BackupService = {
   // Zerar banco (Zona de Perigo)
   zerarBanco: () =>
     api.post<{ zerado: boolean }>('/admin/truncate', { confirmacao: 'CONFIRMAR' }),
+};
+
+// ── Impressão silenciosa ──────────────────────────────────────
+export interface ImpressoraInfo { nome: string; id: string; tamanhos?: string[] }
+export const ImpressaoService = {
+  listar: () => api.get<ImpressoraInfo[]>('/impressao/impressoras'),
+  imprimir: (pdf: ArrayBuffer | Blob, impressora: string) =>
+    api.postBinary<{ impresso: boolean; impressora: string; bytes: number }>(
+      `/impressao/imprimir?impressora=${encodeURIComponent(impressora)}`, pdf),
 };
 
 // ── Relatórios (endpoints novos) ──────────────────────────────

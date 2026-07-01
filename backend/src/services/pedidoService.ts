@@ -144,20 +144,31 @@ export const PedidoService = {
         `SELECT * FROM pedidos WHERE id=$1 AND status='aberto' FOR UPDATE`, [pedidoId]
       );
       if (!pedido) throw new AppError('Pedido não encontrado ou já fechado', 404);
-      if (Number(pedido.total) === 0) throw new AppError('Pedido sem itens', 400);
 
-      if (dto.forma_pagamento === 'dinheiro' && dto.valor_recebido < Number(pedido.total)) {
-        throw new AppError(`Valor insuficiente — faltam R$ ${(Number(pedido.total) - dto.valor_recebido).toFixed(2)}`, 400);
+      // pedido.total ainda é a soma bruta dos itens (desconto/acréscimo = 0 até aqui)
+      const subtotal  = Number(pedido.total);
+      if (subtotal === 0) throw new AppError('Pedido sem itens', 400);
+
+      const desconto  = Math.max(0, Number(dto.desconto  ?? 0));
+      const acrescimo = Math.max(0, Number(dto.acrescimo ?? 0));
+      if (desconto > subtotal) {
+        throw new AppError('O desconto não pode ser maior que o valor da conta', 400);
+      }
+      const totalFinal = Math.max(0, subtotal - desconto + acrescimo);
+
+      if (dto.forma_pagamento === 'dinheiro' && dto.valor_recebido < totalFinal) {
+        throw new AppError(`Valor insuficiente — faltam R$ ${(totalFinal - dto.valor_recebido).toFixed(2)}`, 400);
       }
       const troco = dto.forma_pagamento === 'dinheiro'
-        ? Math.max(0, dto.valor_recebido - Number(pedido.total))
+        ? Math.max(0, dto.valor_recebido - totalFinal)
         : 0;
 
       const { rows: [fechado] } = await client.query<Pedido>(
         `UPDATE pedidos SET status='fechado', fechado_em=NOW(),
-           forma_pagamento=$1, valor_recebido=$2, troco=$3
-         WHERE id=$4 RETURNING *`,
-        [dto.forma_pagamento, dto.valor_recebido, troco, pedidoId]
+           desconto=$1, acrescimo=$2, total=$3,
+           forma_pagamento=$4, valor_recebido=$5, troco=$6
+         WHERE id=$7 RETURNING *`,
+        [desconto, acrescimo, totalFinal, dto.forma_pagamento, dto.valor_recebido, troco, pedidoId]
       );
       await client.query(
         `UPDATE mesas SET status='livre', aberta_em=NULL, pedido_atual_id=NULL WHERE id=$1`,

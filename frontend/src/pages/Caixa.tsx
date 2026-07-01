@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import {
   DollarSign, Lock, Unlock, Printer, FileText,
-  CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Eye
+  CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Eye,
+  ArrowDownCircle, ArrowUpCircle, Receipt,
 } from 'lucide-react';
 import { Card, Button, Input, Modal } from '../components/ui';
-import { formatMoeda, formatDataHora } from '../utils';
-import type { Caixa, RelatorioCaixa, FormaPagamento } from '../types';
+import { formatMoeda, formatDataHora, formatHora } from '../utils';
+import type { Caixa, RelatorioCaixa, FormaPagamento, MovimentacaoCaixa } from '../types';
 import { CaixaService } from '../services/storage';
+import { log } from '../services/log';
+import { imprimirDocumento } from '../services/impressao';
 import jsPDF from 'jspdf';
 
 // ── Utilitários locais ────────────────────────────────────────
@@ -61,7 +64,56 @@ export function Caixa({ caixaAtual, onAbrirCaixa, onFecharCaixa, gerarRelatorio 
   const [relatorioAtual, setRelatorioAtual] = useState<RelatorioCaixa | null>(null);
   const [loadingCaixa, setLoadingCaixa] = useState(false);
 
+  // ── Sangria / Suprimento / Extrato ──────────────────────────
+  const [modalMov, setModalMov]       = useState<null | 'sangria' | 'suprimento'>(null);
+  const [movValor, setMovValor]       = useState('');
+  const [movDesc, setMovDesc]         = useState('');
+  const [movOperador, setMovOperador] = useState('');
+  const [erroMov, setErroMov]         = useState('');
+  const [salvandoMov, setSalvandoMov] = useState(false);
+  const [modalExtrato, setModalExtrato]   = useState(false);
+  const [extrato, setExtrato]             = useState<MovimentacaoCaixa[]>([]);
+  const [loadingExtrato, setLoadingExtrato] = useState(false);
+
   const caixaId = (caixaAtual as any)?.id;
+
+  const recarregarRelatorio = async () => {
+    if (!caixaId) return;
+    const r = await gerarRelatorio(caixaId);
+    setRelatorioAtual(r ?? null);
+  };
+
+  const abrirMov = (tipo: 'sangria' | 'suprimento') => {
+    setModalMov(tipo); setMovValor(''); setMovDesc(''); setMovOperador(''); setErroMov('');
+  };
+
+  const registrarMov = async () => {
+    if (!modalMov) return;
+    const v = parseFloat(movValor.replace(',', '.'));
+    if (isNaN(v) || v <= 0)   { setErroMov('Informe um valor maior que zero'); return; }
+    if (!movOperador.trim())  { setErroMov('Informe o operador responsável'); return; }
+    setSalvandoMov(true);
+    try {
+      await CaixaService.registrarMovimentacao(modalMov, v, movDesc.trim(), movOperador.trim());
+      log.info(modalMov === 'sangria' ? 'Sangria registrada' : 'Suprimento registrado', { valor: v, operador: movOperador.trim(), motivo: movDesc.trim() });
+      await recarregarRelatorio();
+      setModalMov(null);
+    } catch (e: any) {
+      log.error('Falha ao registrar movimentação', { tipo: modalMov, erro: e?.message });
+      setErroMov(e.message ?? 'Erro ao registrar movimentação');
+    } finally {
+      setSalvandoMov(false);
+    }
+  };
+
+  const abrirExtrato = async () => {
+    if (!caixaId) return;
+    setModalExtrato(true);
+    setLoadingExtrato(true);
+    try {
+      setExtrato(await CaixaService.getExtrato(caixaId));
+    } catch { setExtrato([]); } finally { setLoadingExtrato(false); }
+  };
 
   useEffect(() => {
     if (!caixaId) { setRelatorioAtual(null); return; }
@@ -127,15 +179,18 @@ export function Caixa({ caixaAtual, onAbrirCaixa, onFecharCaixa, gerarRelatorio 
 
   return (
     <div className="space-y-6">
-      {/* Cabeçalho */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-primary-900">Controle de Caixa</h1>
-          <p className="text-sm text-primary-500 mt-1">
-            {caixaAtual
-              ? `Caixa aberto desde ${formatDataHora((caixaAtual as any).aberto_em ?? (caixaAtual as any).abertoEm)}`
-              : 'Nenhum caixa aberto no momento'}
-          </p>
+      {/* Cabeçalho — título + ação principal */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${caixaAtual ? 'bg-green-500 animate-pulse' : 'bg-primary-300'}`} />
+          <div>
+            <h1 className="text-2xl font-bold text-primary-900">Controle de Caixa</h1>
+            <p className="text-sm text-primary-500 mt-0.5">
+              {caixaAtual
+                ? `Aberto desde ${formatDataHora((caixaAtual as any).aberto_em ?? (caixaAtual as any).abertoEm)}`
+                : 'Nenhum caixa aberto no momento'}
+            </p>
+          </div>
         </div>
         <div className="flex gap-2">
           {!caixaAtual ? (
@@ -143,17 +198,35 @@ export function Caixa({ caixaAtual, onAbrirCaixa, onFecharCaixa, gerarRelatorio 
               <Unlock size={15} /> Abrir Caixa
             </Button>
           ) : (
-            <>
-              <Button onClick={() => setModalFechar(true)} variant="danger" size="md">
-                <Lock size={15} /> Fechar Caixa
-              </Button>
-            </>
+            <Button onClick={() => setModalFechar(true)} variant="danger" size="md">
+              <Lock size={15} /> Fechar Caixa
+            </Button>
           )}
-          <Button onClick={abrirHistorico} variant="secondary" size="md">
-            <Eye size={15} /> Histórico
+          <Button onClick={abrirHistorico} variant="secondary" size="md" title="Histórico de caixas">
+            <Eye size={15} /> <span className="hidden sm:inline">Histórico</span>
           </Button>
         </div>
       </div>
+
+      {/* Barra de ações de movimentação — só com caixa aberto */}
+      {caixaAtual && (
+        <Card className="p-2 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-primary-400 uppercase tracking-wide px-2 hidden sm:inline">
+            Movimentações
+          </span>
+          <div className="flex-1 grid grid-cols-3 gap-2 min-w-0">
+            <Button onClick={() => abrirMov('suprimento')} variant="secondary" size="md" className="w-full">
+              <ArrowUpCircle size={15} className="text-green-500" /> Suprimento
+            </Button>
+            <Button onClick={() => abrirMov('sangria')} variant="secondary" size="md" className="w-full">
+              <ArrowDownCircle size={15} className="text-red-500" /> Sangria
+            </Button>
+            <Button onClick={abrirExtrato} variant="secondary" size="md" className="w-full">
+              <Receipt size={15} /> Extrato
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* Status do caixa */}
       {!caixaAtual ? (
@@ -178,6 +251,7 @@ export function Caixa({ caixaAtual, onAbrirCaixa, onFecharCaixa, gerarRelatorio 
             <>
               {relatorioAtual && <ResumoCards relatorio={relatorioAtual} />}
               {relatorioAtual && <PorFormaPagamento relatorio={relatorioAtual} />}
+              {relatorioAtual && <MovimentacoesResumo relatorio={relatorioAtual} />}
               {relatorioAtual && <ListaPedidos relatorio={relatorioAtual} />}
             </>
           )}
@@ -378,6 +452,124 @@ export function Caixa({ caixaAtual, onAbrirCaixa, onFecharCaixa, gerarRelatorio 
           onClose={() => setModalRelatorio(null)}
         />
       )}
+
+      {/* ── MODAL: Sangria / Suprimento ────────────────────── */}
+      <Modal
+        open={modalMov !== null}
+        onClose={() => setModalMov(null)}
+        title={modalMov === 'sangria' ? '💸 Sangria (retirada)' : '💰 Suprimento (reforço)'}
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-primary-600">
+            {modalMov === 'sangria'
+              ? 'Retirada de dinheiro do caixa (ex.: pagar fornecedor, depósito). Reduz o saldo esperado.'
+              : 'Entrada de dinheiro no caixa (ex.: reforço de troco). Aumenta o saldo esperado.'}
+          </p>
+          <Input
+            label="Valor (R$)" value={movValor}
+            onChange={(e) => { setMovValor(e.target.value); setErroMov(''); }}
+            placeholder="0,00" inputMode="decimal" autoFocus
+          />
+          <Input
+            label="Operador responsável" value={movOperador}
+            onChange={(e) => { setMovOperador(e.target.value); setErroMov(''); }}
+            placeholder="Ex: João Silva"
+          />
+          <Input
+            label="Motivo / descrição (opcional)" value={movDesc}
+            onChange={(e) => setMovDesc(e.target.value)}
+            placeholder={modalMov === 'sangria' ? 'Ex: Pagamento entregador' : 'Ex: Reforço de troco'}
+          />
+          {erroMov && (
+            <p className="text-sm text-red-500 flex items-center gap-1">
+              <AlertCircle size={13} /> {erroMov}
+            </p>
+          )}
+          <div className="flex gap-3 pt-1">
+            <Button variant="secondary" className="flex-1" onClick={() => setModalMov(null)}>Cancelar</Button>
+            <Button
+              variant={modalMov === 'sangria' ? 'danger' : 'success'}
+              className="flex-1" onClick={registrarMov} loading={salvandoMov}
+            >
+              {modalMov === 'sangria' ? <ArrowDownCircle size={14} /> : <ArrowUpCircle size={14} />}
+              Confirmar
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── MODAL: Extrato do Caixa ────────────────────────── */}
+      <Modal open={modalExtrato} onClose={() => setModalExtrato(false)} title="Extrato do Caixa" size="md">
+        {loadingExtrato ? (
+          <div className="text-center py-8 text-primary-400 text-sm">Carregando...</div>
+        ) : extrato.length === 0 ? (
+          <p className="text-center text-primary-400 py-8 text-sm">Nenhuma movimentação neste caixa.</p>
+        ) : (
+          <div className="space-y-1.5 max-h-[60vh] overflow-y-auto pr-1">
+            {extrato.map((mov) => <LinhaExtrato key={mov.id} mov={mov} />)}
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+// Resumo de sangrias/suprimentos na tela principal do caixa
+function MovimentacoesResumo({ relatorio }: { relatorio: RelatorioCaixa }) {
+  const sangria    = Number(relatorio.sangria ?? 0);
+  const suprimento = Number(relatorio.suprimento ?? 0);
+  if (sangria === 0 && suprimento === 0) return null;
+  return (
+    <Card className="p-5">
+      <h2 className="text-base font-semibold text-primary-700 mb-3">Movimentações de Caixa</h2>
+      <div className="space-y-2 text-sm">
+        {suprimento > 0 && (
+          <div className="flex justify-between items-center">
+            <span className="flex items-center gap-1.5 text-primary-600">
+              <ArrowUpCircle size={14} className="text-green-500" /> Suprimentos (entradas)
+            </span>
+            <span className="font-bold text-green-600">+{formatMoeda(suprimento)}</span>
+          </div>
+        )}
+        {sangria > 0 && (
+          <div className="flex justify-between items-center">
+            <span className="flex items-center gap-1.5 text-primary-600">
+              <ArrowDownCircle size={14} className="text-red-500" /> Sangrias (retiradas)
+            </span>
+            <span className="font-bold text-red-600">−{formatMoeda(sangria)}</span>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// Linha do extrato — ícone, descrição, hora/operador e valor com sinal
+function LinhaExtrato({ mov }: { mov: MovimentacaoCaixa }) {
+  const cfg = ({
+    abertura_caixa:   { icon: '🟢', label: 'Abertura de caixa',  sinal: '',  cor: 'text-primary-600' },
+    venda:            { icon: '💵', label: mov.mesa_numero ? `Venda — Mesa ${mov.mesa_numero}` : (mov.descricao || 'Venda'), sinal: '+', cor: 'text-green-600' },
+    sangria:          { icon: '💸', label: mov.descricao || 'Sangria',     sinal: '−', cor: 'text-red-600' },
+    suprimento:       { icon: '💰', label: mov.descricao || 'Suprimento',  sinal: '+', cor: 'text-green-600' },
+    fechamento_caixa: { icon: '🔒', label: 'Fechamento de caixa', sinal: '', cor: 'text-primary-400' },
+  } as Record<string, { icon: string; label: string; sinal: string; cor: string }>)[mov.tipo]
+    ?? { icon: '•', label: mov.descricao ?? mov.tipo, sinal: '', cor: 'text-primary-600' };
+
+  return (
+    <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-primary-50">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span className="text-lg shrink-0">{cfg.icon}</span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-primary-800 truncate">{cfg.label}</p>
+          <p className="text-xs text-primary-400">
+            {formatHora(mov.criado_em)}{mov.operador ? ` · ${mov.operador}` : ''}
+          </p>
+        </div>
+      </div>
+      <span className={`text-sm font-bold shrink-0 ${cfg.cor}`}>
+        {cfg.sinal}{formatMoeda(Number(mov.valor))}
+      </span>
     </div>
   );
 }
@@ -508,13 +700,29 @@ function ListaPedidos({ relatorio }: { relatorio: RelatorioCaixa }) {
 // Modal Relatório Completo (com impressão e PDF)
 // ─────────────────────────────────────────────────────────────
 function ModalRelatorio({ relatorio, onClose }: { relatorio: RelatorioCaixa; onClose: () => void }) {
-  const { totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca } = relatorio;
+  const { totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca,
+          sangria = 0, suprimento = 0, totalDesconto = 0, totalAcrescimo = 0 } = relatorio;
   const pedidos = relatorio.pedidos ?? [];
   // Guard contra caixa undefined (acontecia ao abrir relatório do histórico)
   const caixa = relatorio.caixa ?? ({} as any);
   const isFechado = caixa.status === 'fechado';
 
-  const handleImprimir = () => {
+  const [imprimindo, setImprimindo] = useState(false);
+
+  // Impressão silenciosa (sem Ctrl+P) na impressora de relatórios configurada
+  const handleImprimir = async () => {
+    setImprimindo(true);
+    try {
+      await imprimirDocumento(montarPDFCaixa(relatorio), 'relatorio');
+    } catch (e: any) {
+      window.alert(e?.message ?? 'Falha ao imprimir');
+    } finally {
+      setImprimindo(false);
+    }
+  };
+
+  // Pré-visualizar (relatório parcial) — usa o diálogo do navegador
+  const handlePreview = () => {
     const printArea = document.getElementById('print-area');
     if (!printArea) return;
     printArea.innerHTML = buildHtmlRelatorio(relatorio);
@@ -522,7 +730,7 @@ function ModalRelatorio({ relatorio, onClose }: { relatorio: RelatorioCaixa; onC
   };
 
   const handlePDF = () => {
-    gerarPDFCaixa(relatorio);
+    montarPDFCaixa(relatorio).save(`fechamento-caixa-${new Date().toISOString().slice(0, 10)}.pdf`);
   };
 
   return (
@@ -567,7 +775,19 @@ function ModalRelatorio({ relatorio, onClose }: { relatorio: RelatorioCaixa; onC
                 <Row key={f} label={`${FORMAS_ICON[f]} ${FORMAS_LABEL[f]}`} value={formatMoeda(porFormaPagamento[f])} indent />
               ) : null
             )}
+            {Number(totalDesconto) > 0 && (
+              <Row label="Descontos concedidos" value={`−${formatMoeda(Number(totalDesconto))}`} />
+            )}
+            {Number(totalAcrescimo) > 0 && (
+              <Row label="Acréscimos / serviço" value={`+${formatMoeda(Number(totalAcrescimo))}`} />
+            )}
             <Row label="Troco inicial (abertura)" value={formatMoeda(Number(caixa.valor_abertura ?? caixa.valorAbertura ?? 0))} />
+            {Number(suprimento) > 0 && (
+              <Row label="💰 Suprimentos" value={`+${formatMoeda(Number(suprimento))}`} />
+            )}
+            {Number(sangria) > 0 && (
+              <Row label="💸 Sangrias" value={`−${formatMoeda(Number(sangria))}`} />
+            )}
             <Row label="Saldo esperado em caixa" value={formatMoeda(saldoEsperado)} bold accent />
             {isFechado && (caixa.valor_contado ?? caixa.valorContado) !== undefined && (
               <>
@@ -621,7 +841,7 @@ function ModalRelatorio({ relatorio, onClose }: { relatorio: RelatorioCaixa; onC
           <Button variant="secondary" className="flex-1" onClick={onClose}>Fechar</Button>
           {isFechado ? (
             <>
-              <Button variant="secondary" className="flex-1" onClick={handleImprimir}>
+              <Button variant="secondary" className="flex-1" onClick={handleImprimir} loading={imprimindo}>
                 <Printer size={14} /> Imprimir
               </Button>
               <Button className="flex-1" onClick={handlePDF}>
@@ -629,7 +849,7 @@ function ModalRelatorio({ relatorio, onClose }: { relatorio: RelatorioCaixa; onC
               </Button>
             </>
           ) : (
-            <Button variant="secondary" className="flex-1" onClick={handleImprimir}>
+            <Button variant="secondary" className="flex-1" onClick={handlePreview}>
               <Eye size={14} /> Pré-visualizar
             </Button>
           )}
@@ -664,8 +884,9 @@ function Row({
 // ─────────────────────────────────────────────────────────────
 // Geração de PDF do caixa
 // ─────────────────────────────────────────────────────────────
-function gerarPDFCaixa(relatorio: RelatorioCaixa) {
-  const { totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca } = relatorio;
+function montarPDFCaixa(relatorio: RelatorioCaixa): jsPDF {
+  const { totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca,
+          sangria = 0, suprimento = 0, totalDesconto = 0, totalAcrescimo = 0 } = relatorio;
   const pedidos = relatorio.pedidos ?? [];
   const caixa: any = relatorio.caixa ?? {};
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
@@ -737,6 +958,10 @@ function gerarPDFCaixa(relatorio: RelatorioCaixa) {
     }
   }
   y += 1;
+  if (Number(totalDesconto) > 0)  row('Descontos concedidos:', `-${formatMoeda(Number(totalDesconto))}`);
+  if (Number(totalAcrescimo) > 0) row('Acrescimos / servico:', `+${formatMoeda(Number(totalAcrescimo))}`);
+  if (Number(suprimento) > 0)     row('Suprimentos:', `+${formatMoeda(Number(suprimento))}`);
+  if (Number(sangria) > 0)        row('Sangrias:', `-${formatMoeda(Number(sangria))}`);
   row('Saldo esperado em caixa:', formatMoeda(saldoEsperado), true);
 
   if ((caixa.valor_contado ?? caixa.valorContado) !== undefined) {
@@ -806,16 +1031,19 @@ function gerarPDFCaixa(relatorio: RelatorioCaixa) {
   doc.text('Operador', 15, y);
   doc.text('Responsável', 110, y);
 
-  doc.save(`fechamento-caixa-${new Date().toISOString().slice(0, 10)}.pdf`);
+  return doc;
 }
 
 // ─────────────────────────────────────────────────────────────
 // HTML para window.print()
 // ─────────────────────────────────────────────────────────────
 function buildHtmlRelatorio(relatorio: RelatorioCaixa): string {
-  const { totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca } = relatorio;
+  const { totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca,
+          sangria = 0, suprimento = 0, totalDesconto = 0, totalAcrescimo = 0 } = relatorio;
   const pedidos = relatorio.pedidos ?? [];
   const caixa: any = relatorio.caixa ?? {};
+  const linhaMov = (rotulo: string, valor: number, sinal: string) =>
+    valor > 0 ? `<tr><td>${rotulo}</td><td style="text-align:right">${sinal}${formatMoeda(valor)}</td></tr>` : '';
 
   const formasHtml = (Object.keys(porFormaPagamento) as FormaPagamento[])
     .filter((f) => porFormaPagamento[f] > 0)
@@ -858,7 +1086,11 @@ function buildHtmlRelatorio(relatorio: RelatorioCaixa): string {
         <tr><td><strong>Total de vendas</strong></td><td style="text-align:right"><strong>${formatMoeda(totalVendas)}</strong></td></tr>
         <tr><td>Pedidos realizados</td><td style="text-align:right">${totalPedidos}</td></tr>
         ${formasHtml}
+        ${linhaMov('Descontos concedidos', Number(totalDesconto), '−')}
+        ${linhaMov('Acréscimos / serviço', Number(totalAcrescimo), '+')}
         <tr><td>Troco inicial</td><td style="text-align:right">${formatMoeda(Number(caixa.valor_abertura ?? caixa.valorAbertura ?? 0))}</td></tr>
+        ${linhaMov('Suprimentos', Number(suprimento), '+')}
+        ${linhaMov('Sangrias', Number(sangria), '−')}
         <tr><td><strong>Saldo esperado em caixa</strong></td><td style="text-align:right"><strong>${formatMoeda(saldoEsperado)}</strong></td></tr>
         ${(caixa.valor_contado ?? caixa.valorContado) !== undefined ? `<tr><td><strong>Valor contado</strong></td><td style="text-align:right"><strong>${formatMoeda(Number(caixa.valor_contado ?? caixa.valorContado ?? 0))}</strong></td></tr>` : ''}
         ${diferencaStr}

@@ -67,6 +67,8 @@ export interface Pedido {
   caixa_id?:        string;
   status:           StatusPedido;
   total:            number;
+  desconto?:        number;
+  acrescimo?:       number;
   forma_pagamento?: FormaPagamento;
   valor_recebido?:  number;
   troco?:           number;
@@ -90,14 +92,15 @@ export interface ItemPedido {
 }
 
 export interface MovimentacaoCaixa {
-  id:          string;
-  caixa_id:    string;
-  pedido_id?:  string;
-  tipo:        TipoMovimentacao;
-  valor:       number;
-  descricao?:  string;
-  operador?:   string;
-  criado_em:   Date;
+  id:           string;
+  caixa_id:     string;
+  pedido_id?:   string;
+  mesa_numero?: number;   // vem do JOIN no extrato (quando é uma venda)
+  tipo:         TipoMovimentacao;
+  valor:        number;
+  descricao?:   string;
+  operador?:    string;
+  criado_em:    Date;
 }
 
 // ── DTOs de request ───────────────────────────────────────────
@@ -133,6 +136,8 @@ export interface AtualizarItemDTO {
 export interface FecharContaDTO {
   forma_pagamento: FormaPagamento;
   valor_recebido:  number;
+  desconto?:       number;   // em R$ (o % é convertido no frontend)
+  acrescimo?:      number;   // em R$
 }
 
 export interface AbrirCaixaDTO {
@@ -178,7 +183,14 @@ export interface ResumoCaixa {
   total_vendas:      number;
   total_dinheiro:    number;
   total_pix:         number;
+  total_debito?:     number;
+  total_credito?:    number;
+  total_voucher?:    number;
   total_cartao:      number;
+  total_sangria?:    number;
+  total_suprimento?: number;
+  total_desconto?:   number;
+  total_acrescimo?:  number;
   saldo_esperado:    number;
 }
 

@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS pedidos (
   caixa_id        UUID            REFERENCES caixas(id),
   status          status_pedido   NOT NULL DEFAULT 'aberto',
   total           NUMERIC(10,2)   NOT NULL DEFAULT 0 CHECK (total >= 0),
+  desconto        NUMERIC(10,2)   NOT NULL DEFAULT 0 CHECK (desconto >= 0),
+  acrescimo       NUMERIC(10,2)   NOT NULL DEFAULT 0 CHECK (acrescimo >= 0),
   forma_pagamento forma_pagamento,
   valor_recebido  NUMERIC(10,2),
   troco           NUMERIC(10,2),
@@ -189,15 +191,24 @@ SELECT
   COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'pix'),      0) AS total_pix,
   -- cartao = legado (registros antigos antes de débito/crédito serem separados)
   COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'cartao'),   0) AS total_cartao,
-  -- saldo_esperado: só dinheiro vai para o caixa físico
-  c.valor_abertura +
-    COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'dinheiro'), 0)
+  -- saldo_esperado em DINHEIRO no caixa físico:
+  -- abertura + vendas em dinheiro + suprimentos − sangrias
+  c.valor_abertura
+    + COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'dinheiro'), 0)
+    + COALESCE((SELECT SUM(m.valor) FROM movimentacoes_caixa m WHERE m.caixa_id = c.id AND m.tipo = 'suprimento'), 0)
+    - COALESCE((SELECT SUM(m.valor) FROM movimentacoes_caixa m WHERE m.caixa_id = c.id AND m.tipo = 'sangria'),    0)
     AS saldo_esperado,
   c.observacoes,
   COUNT(p.id) FILTER (WHERE p.status = 'cancelado')                                               AS total_cancelados,
   COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'debito'),   0) AS total_debito,
   COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'credito'),  0) AS total_credito,
-  COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'voucher'),  0) AS total_voucher
+  COALESCE(SUM(p.total) FILTER (WHERE p.status = 'fechado' AND p.forma_pagamento = 'voucher'),  0) AS total_voucher,
+  -- Movimentações manuais de caixa
+  COALESCE((SELECT SUM(m.valor) FROM movimentacoes_caixa m WHERE m.caixa_id = c.id AND m.tipo = 'sangria'),    0) AS total_sangria,
+  COALESCE((SELECT SUM(m.valor) FROM movimentacoes_caixa m WHERE m.caixa_id = c.id AND m.tipo = 'suprimento'), 0) AS total_suprimento,
+  -- Descontos e acréscimos concedidos nas vendas
+  COALESCE(SUM(p.desconto)  FILTER (WHERE p.status = 'fechado'), 0) AS total_desconto,
+  COALESCE(SUM(p.acrescimo) FILTER (WHERE p.status = 'fechado'), 0) AS total_acrescimo
 FROM caixas c
 LEFT JOIN pedidos p ON p.caixa_id = c.id
 GROUP BY c.id, c.aberto_por, c.aberto_em, c.fechado_por, c.fechado_em,
@@ -230,11 +241,11 @@ BEGIN
     v_pedido_id := NEW.pedido_id;
   END IF;
 
+  -- total final = soma dos itens − desconto + acréscimo (nunca negativo)
   UPDATE pedidos
-     SET total = (
-       SELECT COALESCE(SUM(subtotal), 0)
-         FROM itens_pedido
-        WHERE pedido_id = v_pedido_id
+     SET total = GREATEST(0,
+       (SELECT COALESCE(SUM(subtotal), 0) FROM itens_pedido WHERE pedido_id = v_pedido_id)
+       - COALESCE(desconto, 0) + COALESCE(acrescimo, 0)
      )
    WHERE id = v_pedido_id;
 

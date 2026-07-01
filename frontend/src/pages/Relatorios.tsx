@@ -8,6 +8,8 @@ import { Card, Button, Modal } from '../components/ui';
 import { formatMoeda, formatDataHora, formatHora, localDate } from '../utils';
 import type { RelatorioCaixa, FormaPagamento } from '../types';
 import { CaixaService, PedidoService, RelatorioApiService } from '../services/storage';
+import { imprimirDocumento, montarPDFCupom } from '../services/impressao';
+import { log } from '../services/log';
 import jsPDF from 'jspdf';
 
 const FORMAS_LABEL: Record<FormaPagamento, string> = {
@@ -102,12 +104,20 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
     setPedExpandido(false);
   };
 
-  const handleImprimir = () => {
+  const [imprimindoRel, setImprimindoRel] = useState(false);
+  // Impressão silenciosa do relatório de caixa (sem Ctrl+P)
+  const handleImprimir = async () => {
     if (!relSelecionado) return;
-    const area = document.getElementById('print-area');
-    if (area) { area.innerHTML = buildHtmlRelatorio(relSelecionado); window.print(); }
+    setImprimindoRel(true);
+    try {
+      await imprimirDocumento(montarPDFCaixa(relSelecionado), 'relatorio');
+    } catch (e: any) {
+      window.alert(e?.message ?? 'Falha ao imprimir');
+    } finally {
+      setImprimindoRel(false);
+    }
   };
-  const handlePDF = () => { if (relSelecionado) gerarPDFCaixa(relSelecionado); };
+  const handlePDF = () => { if (relSelecionado) montarPDFCaixa(relSelecionado).save(`relatorio-caixa-${g.abertoEm(relSelecionado.caixa).slice(0,10)}.pdf`); };
   const handleJSON = async () => {
     if (!relSelecionado) return;
     const blob = new Blob([JSON.stringify(relSelecionado, null, 2)], { type: 'application/json' });
@@ -116,9 +126,14 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
     a.href = url; a.download = `relatorio-caixa-${g.abertoEm(relSelecionado.caixa).slice(0, 10)}.json`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
-  const imprimirPedido = (pedido: any) => {
-    const area = document.getElementById('print-area');
-    if (area) { area.innerHTML = buildHtmlPedido(pedido, nomeEstabelecimento); window.print(); }
+  // Reimpressão silenciosa do cupom da conta (impressora de cupom configurada)
+  const imprimirPedido = async (pedido: any) => {
+    try {
+      await imprimirDocumento(montarPDFCupom(pedido, nomeEstabelecimento), 'cupom');
+      log.info('Cupom reimpresso', { mesa: g.mesaId(pedido), total: Number(pedido.total) });
+    } catch (e: any) {
+      window.alert(e?.message ?? 'Falha ao imprimir o cupom');
+    }
   };
 
   const dataLabel = data
@@ -254,7 +269,7 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
                   <p className="text-xs text-primary-400 mt-0.5">{formatDataHora(g.abertoEm(rel.caixa))}</p>
                 </div>
                 <div className="flex gap-2 flex-wrap">
-                  <Button variant="secondary" size="sm" onClick={handleImprimir}><Printer size={13} /> Imprimir</Button>
+                  <Button variant="secondary" size="sm" onClick={handleImprimir} loading={imprimindoRel}><Printer size={13} /> Imprimir</Button>
                   {rel.caixa.status === 'fechado' && (
                     <>
                       <Button size="sm" onClick={handlePDF}><FileText size={13} /> PDF</Button>
@@ -296,7 +311,11 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
                         ? <RowR key={f} label={`${FORMAS_ICON[f]} ${FORMAS_LABEL[f]}`} value={formatMoeda(rel.porFormaPagamento[f])} indent />
                         : null
                     )}
+                    {Number(rel.totalDesconto) > 0 && <RowR label="Descontos concedidos" value={`−${formatMoeda(Number(rel.totalDesconto))}`} />}
+                    {Number(rel.totalAcrescimo) > 0 && <RowR label="Acréscimos / serviço" value={`+${formatMoeda(Number(rel.totalAcrescimo))}`} />}
                     <RowR label="Troco inicial" value={formatMoeda(g.valorAb(rel.caixa))} />
+                    {Number(rel.suprimento) > 0 && <RowR label="💰 Suprimentos" value={`+${formatMoeda(Number(rel.suprimento))}`} />}
+                    {Number(rel.sangria) > 0 && <RowR label="💸 Sangrias" value={`−${formatMoeda(Number(rel.sangria))}`} />}
                     <RowR label="Saldo esperado" value={formatMoeda(rel.saldoEsperado)} bold />
                     {rel.caixa.status === 'fechado' && (
                       <>
@@ -375,7 +394,36 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
               <p className="text-sm">Nenhuma conta fechada nesta data</p>
             </Card>
           ) : (
-            grupos.map((grupo, idx) => {
+            <>
+              {/* Resumo do dia — visão geral antes do detalhe por caixa */}
+              {(() => {
+                const todos = grupos.flatMap((gr) => gr.pedidos);
+                const fatur = todos.reduce((s: number, p: any) => s + Number(p.total), 0);
+                const ticket = todos.length ? fatur / todos.length : 0;
+                return (
+                  <div className="grid grid-cols-3 gap-3">
+                    <Card className="p-4">
+                      <div className="flex items-center gap-2 text-primary-400 mb-1">
+                        <UtensilsCrossed size={15} /><span className="text-xs font-medium">Contas</span>
+                      </div>
+                      <p className="text-xl font-black text-primary-900">{todos.length}</p>
+                    </Card>
+                    <Card className="p-4">
+                      <div className="flex items-center gap-2 text-primary-400 mb-1">
+                        <TrendingUp size={15} /><span className="text-xs font-medium">Faturamento</span>
+                      </div>
+                      <p className="text-xl font-black text-accent-600">{formatMoeda(fatur)}</p>
+                    </Card>
+                    <Card className="p-4">
+                      <div className="flex items-center gap-2 text-primary-400 mb-1">
+                        <BarChart2 size={15} /><span className="text-xs font-medium">Ticket médio</span>
+                      </div>
+                      <p className="text-xl font-black text-primary-900">{formatMoeda(ticket)}</p>
+                    </Card>
+                  </div>
+                );
+              })()}
+            {grupos.map((grupo, idx) => {
               const totalGrupo = grupo.pedidos.reduce((s: number, p: any) => s + Number(p.total), 0);
               return (
                 <Card key={grupo.caixa?.id ?? idx} className="overflow-hidden">
@@ -403,31 +451,32 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
                   </div>
                   <div className="divide-y divide-primary-50">
                     {grupo.pedidos.map((p: any, pidx: number) => (
-                      <div key={p.id} className="flex items-center justify-between px-5 py-3 hover:bg-primary-50 transition-colors">
-                        <div className="flex items-center gap-4">
-                          <span className="text-xs text-primary-300 w-5 text-right font-medium">{pidx + 1}</span>
+                      <div key={p.id} className="flex items-center justify-between gap-2 px-3 sm:px-5 py-3 hover:bg-primary-50 transition-colors">
+                        <div className="flex items-center gap-2.5 sm:gap-4 min-w-0">
+                          <span className="hidden sm:block text-xs text-primary-300 w-5 text-right font-medium">{pidx + 1}</span>
                           <div className="w-9 h-9 rounded-xl bg-primary-100 flex items-center justify-center shrink-0">
                             <span className="font-black text-primary-700 text-sm">{g.mesaId(p)}</span>
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <p className="text-sm font-semibold text-primary-900">Mesa {g.mesaId(p)}</p>
-                            <div className="flex items-center gap-2 text-xs text-primary-400 mt-0.5">
-                              <Clock size={10} />
-                              <span>{formatHora(g.pedCriado(p))} → {formatHora(g.pedFechado(p))}</span>
-                              {g.pedForma(p) && <span>{FORMAS_ICON[g.pedForma(p)!]} {FORMAS_LABEL[g.pedForma(p)!]}</span>}
+                            <div className="flex items-center gap-2 text-xs text-primary-400 mt-0.5 flex-wrap">
+                              <span className="flex items-center gap-1 whitespace-nowrap"><Clock size={10} />{formatHora(g.pedCriado(p))}–{formatHora(g.pedFechado(p))}</span>
+                              {g.pedForma(p) && <span className="whitespace-nowrap">{FORMAS_ICON[g.pedForma(p)!]} {FORMAS_LABEL[g.pedForma(p)!]}</span>}
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-black text-accent-600">{formatMoeda(Number(p.total))}</span>
+                        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                          <span className="font-black text-accent-600 whitespace-nowrap">{formatMoeda(Number(p.total))}</span>
                           <button onClick={async () => {
                             try {
                               const full = await PedidoService.buscarPorId(p.id);
                               setPedDetalhe(full ?? p);
                             } catch { setPedDetalhe(p); }
                           }}
-                            className="text-xs text-primary-400 hover:text-accent-600 px-2 py-1 hover:bg-accent-50 rounded-lg transition-colors font-medium">
-                            Ver / Reimprimir
+                            title="Ver / Reimprimir conta"
+                            className="text-xs text-primary-400 hover:text-accent-600 p-2 hover:bg-accent-50 rounded-lg transition-colors font-medium shrink-0">
+                            <Printer size={15} className="sm:hidden" />
+                            <span className="hidden sm:inline">Ver / Reimprimir</span>
                           </button>
                         </div>
                       </div>
@@ -435,7 +484,8 @@ export function Relatorios({ gerarRelatorio, nomeEstabelecimento }: Props) {
                   </div>
                 </Card>
               );
-            })
+            })}
+            </>
           )}
         </div>
       )}
@@ -511,17 +561,22 @@ function AbaAuditoriaProducao({ data }: { data: string }) {
     }
   }, [inicio, fim]);
 
-  const handleImprimir = () => {
+  const [imprimindoAud, setImprimindoAud] = useState(false);
+  const handleImprimir = async () => {
     if (!resultado) return;
-    const area = document.getElementById('print-area');
-    if (!area) return;
-    area.innerHTML = buildHtmlAuditoria(resultado, inicio, fim);
-    window.print();
+    setImprimindoAud(true);
+    try {
+      await imprimirDocumento(montarPDFAuditoria(resultado, inicio, fim), 'relatorio');
+    } catch (e: any) {
+      window.alert(e?.message ?? 'Falha ao imprimir');
+    } finally {
+      setImprimindoAud(false);
+    }
   };
 
   const handlePDF = () => {
     if (!resultado) return;
-    gerarPDFAuditoria(resultado, inicio, fim);
+    montarPDFAuditoria(resultado, inicio, fim).save(`auditoria-vendas-${inicio}.pdf`);
   };
 
   useEffect(() => { carregar(); }, [carregar]);
@@ -558,7 +613,7 @@ function AbaAuditoriaProducao({ data }: { data: string }) {
           </Button>
           {resultado && !carregando && (
             <>
-              <Button variant="secondary" size="sm" onClick={handleImprimir}><Printer size={13} /> Imprimir</Button>
+              <Button variant="secondary" size="sm" onClick={handleImprimir} loading={imprimindoAud}><Printer size={13} /> Imprimir</Button>
               <Button size="sm" onClick={handlePDF}><FileText size={13} /> PDF</Button>
             </>
           )}
@@ -787,9 +842,10 @@ function buildHtmlPedido(pedido: any, nome: string): string {
     </div>`;
 }
 
-// PDF relatório de caixa
-function gerarPDFCaixa(relatorio: RelatorioCaixa) {
-  const { caixa, pedidos, totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca } = relatorio;
+// PDF relatório de caixa — monta e retorna o documento (caller decide salvar/imprimir)
+function montarPDFCaixa(relatorio: RelatorioCaixa): jsPDF {
+  const { caixa, pedidos, totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca,
+          sangria = 0, suprimento = 0, totalDesconto = 0, totalAcrescimo = 0 } = relatorio;
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
   const W = 210; let y = 15;
   const sub = (t: string) => { doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(80,80,80); doc.text(t,15,y); y+=6; doc.setTextColor(0,0,0); };
@@ -813,6 +869,10 @@ function gerarPDFCaixa(relatorio: RelatorioCaixa) {
   for (const f of Object.keys(porFormaPagamento) as FormaPagamento[]) {
     if (porFormaPagamento[f] > 0) row(`  ${FORMAS_LABEL[f]}:`, formatMoeda(porFormaPagamento[f]));
   }
+  if (Number(totalDesconto) > 0)  row('Descontos concedidos:', `-${formatMoeda(Number(totalDesconto))}`);
+  if (Number(totalAcrescimo) > 0) row('Acrescimos / servico:', `+${formatMoeda(Number(totalAcrescimo))}`);
+  if (Number(suprimento) > 0)     row('Suprimentos:', `+${formatMoeda(Number(suprimento))}`);
+  if (Number(sangria) > 0)        row('Sangrias:', `-${formatMoeda(Number(sangria))}`);
   row('Saldo esperado:', formatMoeda(saldoEsperado), true);
   if (g.valorCon(caixa) > 0) {
     row('Valor contado:', formatMoeda(g.valorCon(caixa)), true);
@@ -836,12 +896,15 @@ function gerarPDFCaixa(relatorio: RelatorioCaixa) {
   doc.text('Assinaturas:',15,y); y+=12;
   doc.line(15,y,90,y); doc.line(110,y,W-15,y); y+=4; doc.setFontSize(8);
   doc.text('Operador',15,y); doc.text('Responsavel',110,y);
-  doc.save(`relatorio-caixa-${g.abertoEm(caixa).slice(0,10)}.pdf`);
+  return doc;
 }
 
 // HTML para window.print()
 function buildHtmlRelatorio(relatorio: RelatorioCaixa): string {
-  const { caixa, pedidos, totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca } = relatorio;
+  const { caixa, pedidos, totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca,
+          sangria = 0, suprimento = 0, totalDesconto = 0, totalAcrescimo = 0 } = relatorio;
+  const movH = (rotulo: string, valor: number, sinal: string) =>
+    valor > 0 ? `<tr><td>${rotulo}</td><td style="text-align:right">${sinal}${formatMoeda(valor)}</td></tr>` : '';
   const formasH = (Object.keys(porFormaPagamento) as FormaPagamento[])
     .filter((f) => porFormaPagamento[f] > 0)
     .map((f) => `<tr><td style="padding-left:12px">${FORMAS_LABEL[f]}</td><td style="text-align:right">${formatMoeda(porFormaPagamento[f])}</td></tr>`)
@@ -872,6 +935,10 @@ function buildHtmlRelatorio(relatorio: RelatorioCaixa): string {
       <tr><td><strong>Total vendas</strong></td><td style="text-align:right"><strong>${formatMoeda(totalVendas)}</strong></td></tr>
       <tr><td>Pedidos</td><td style="text-align:right">${totalPedidos}</td></tr>
       ${formasH}
+      ${movH('Descontos concedidos', Number(totalDesconto), '−')}
+      ${movH('Acréscimos / serviço', Number(totalAcrescimo), '+')}
+      ${movH('Suprimentos', Number(suprimento), '+')}
+      ${movH('Sangrias', Number(sangria), '−')}
       <tr><td><strong>Saldo esperado</strong></td><td style="text-align:right"><strong>${formatMoeda(saldoEsperado)}</strong></td></tr>
       ${g.valorCon(caixa)>0?`<tr><td><strong>Valor contado</strong></td><td style="text-align:right"><strong>${formatMoeda(g.valorCon(caixa))}</strong></td></tr>`:''}
       ${difH}
@@ -939,7 +1006,7 @@ function buildHtmlAuditoria(r: any, inicio: string, fim: string): string {
   </div>`;
 }
 
-function gerarPDFAuditoria(r: any, inicio: string, fim: string) {
+function montarPDFAuditoria(r: any, inicio: string, fim: string): jsPDF {
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
   const W = 210; let y = 15;
   const sub = (t: string) => { doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(70,70,70); doc.text(t,15,y); y+=6; doc.setTextColor(0,0,0); };
@@ -990,5 +1057,5 @@ function gerarPDFAuditoria(r: any, inicio: string, fim: string) {
 
   y += 5; doc.setFontSize(8); doc.setTextColor(150,150,150);
   doc.text('Documento gerado automaticamente pelo sistema de caixa.', W/2, y, {align:'center'});
-  doc.save(`auditoria-vendas-${inicio}.pdf`);
+  return doc;
 }

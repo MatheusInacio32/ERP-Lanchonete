@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { Save, Trash2, Download, Upload, FileText, AlertCircle, CheckCircle2, Folder, FolderX, Info, Palette } from 'lucide-react';
+import { Save, Trash2, Download, Upload, FileText, AlertCircle, CheckCircle2, Folder, FolderX, Info, Palette, Printer, RefreshCw } from 'lucide-react';
+import jsPDF from 'jspdf';
 import { Card, Button, Input } from '../components/ui';
 import { FolderStorage } from '../services/folderStorage';
-import { BackupService, ConfigService } from '../services/storage';
+import { BackupService, ConfigService, ImpressaoService, type ImpressoraInfo } from '../services/storage';
+import { getImpressora, setImpressora, imprimirDocumento, type TipoImpressao } from '../services/impressao';
 import { TEMAS, getTema, setTema, type CorTema } from '../services/theme';
 import type { Configuracoes as TConfig } from '../types';
 
@@ -23,6 +25,49 @@ export function Configuracoes({ config, onSalvar }: Props) {
   const [zerando, setZerando]       = useState(false);
   const [tema, setTemaState]        = useState<CorTema>(() => getTema());
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // ── Impressão ──────────────────────────────────────────────
+  const [impressoras, setImpressoras] = useState<ImpressoraInfo[]>([]);
+  const [carregandoImpr, setCarregandoImpr] = useState(false);
+  const [errImpr, setErrImpr] = useState<string | null>(null);
+  const [selRel, setSelRel] = useState<string>(() => getImpressora('relatorio'));
+  const [selCup, setSelCup] = useState<string>(() => getImpressora('cupom'));
+  const [testMsg, setTestMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
+
+  const carregarImpressoras = async () => {
+    setCarregandoImpr(true);
+    setErrImpr(null);
+    try {
+      setImpressoras(await ImpressaoService.listar());
+    } catch (e: any) {
+      setErrImpr(e.message ?? 'Não foi possível listar as impressoras');
+    } finally {
+      setCarregandoImpr(false);
+    }
+  };
+  useEffect(() => { carregarImpressoras(); }, []);
+
+  const escolherImpressora = (tipo: TipoImpressao, nome: string) => {
+    setImpressora(tipo, nome);
+    if (tipo === 'relatorio') setSelRel(nome); else setSelCup(nome);
+    setTestMsg(null);
+  };
+
+  const testarImpressao = async (tipo: TipoImpressao) => {
+    setTestMsg(null);
+    try {
+      const doc = new jsPDF({ unit: 'mm', format: tipo === 'cupom' ? [80, 60] : 'a4' });
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+      doc.text('TESTE DE IMPRESSAO', tipo === 'cupom' ? 40 : 105, 15, { align: 'center' });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+      doc.text(`Tipo: ${tipo === 'cupom' ? 'Cupom de mesas' : 'Relatorios'}`, tipo === 'cupom' ? 40 : 105, 25, { align: 'center' });
+      doc.text(new Date().toLocaleString('pt-BR'), tipo === 'cupom' ? 40 : 105, 32, { align: 'center' });
+      await imprimirDocumento(doc, tipo);
+      setTestMsg({ tipo: 'ok', texto: `Página de teste enviada para a impressora de ${tipo === 'cupom' ? 'cupom' : 'relatórios'}.` });
+    } catch (e: any) {
+      setTestMsg({ tipo: 'erro', texto: e.message ?? 'Falha ao imprimir teste' });
+    }
+  };
 
   const escolherCor = async (cor: CorTema) => {
     setTema(cor);        // aplica na hora + cache local (UX instantânea)
@@ -165,6 +210,66 @@ export function Configuracoes({ config, onSalvar }: Props) {
             ))}
           </div>
         </div>
+      </Card>
+
+      {/* Impressão silenciosa */}
+      <Card className="p-5 space-y-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="font-semibold text-primary-700 flex items-center gap-2">
+            <Printer size={16} /> Impressão
+          </h2>
+          <button onClick={carregarImpressoras} title="Atualizar lista de impressoras"
+            className="text-primary-400 hover:text-accent-600 p-1.5 rounded-lg hover:bg-primary-50 transition-colors">
+            <RefreshCw size={15} className={carregandoImpr ? 'animate-spin' : ''} />
+          </button>
+        </div>
+        <p className="text-xs text-primary-500">
+          Escolha a impressora de cada tipo. Ao clicar em <strong>Imprimir</strong>, o documento é
+          enviado direto para a impressora, sem abrir o diálogo do Windows (Ctrl+P).
+          As impressoras listadas são as instaladas no computador que roda o servidor.
+        </p>
+
+        {errImpr && (
+          <div className="flex items-center gap-2 p-3 rounded-xl text-sm border bg-red-50 border-red-200 text-red-700">
+            <AlertCircle size={15} /> {errImpr}
+          </div>
+        )}
+
+        {([
+          { tipo: 'relatorio' as TipoImpressao, label: 'Impressora de relatórios', sel: selRel, hint: 'Relatórios de caixa, auditoria (A4)' },
+          { tipo: 'cupom' as TipoImpressao,     label: 'Impressora de cupom (mesas)', sel: selCup, hint: 'Cupom da conta da mesa (bobina 80mm)' },
+        ]).map(({ tipo, label, sel, hint }) => (
+          <div key={tipo} className="space-y-1.5">
+            <label className="text-sm font-medium text-primary-700 block">{label}</label>
+            <p className="text-xs text-primary-400">{hint}</p>
+            <div className="flex gap-2">
+              <select
+                value={sel}
+                onChange={(e) => escolherImpressora(tipo, e.target.value)}
+                className="flex-1 min-w-0 border border-primary-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-accent-400">
+                <option value="">— Nenhuma (impressão desativada) —</option>
+                {impressoras.map((imp) => (
+                  <option key={imp.id} value={imp.nome}>{imp.nome}</option>
+                ))}
+                {/* mantém o valor salvo mesmo se a impressora estiver offline agora */}
+                {sel && !impressoras.some((i) => i.nome === sel) && (
+                  <option value={sel}>{sel} (offline)</option>
+                )}
+              </select>
+              <Button variant="secondary" size="sm" onClick={() => testarImpressao(tipo)} disabled={!sel}>
+                <Printer size={13} /> Testar
+              </Button>
+            </div>
+          </div>
+        ))}
+
+        {testMsg && (
+          <div className={`flex items-center gap-2 p-3 rounded-xl text-sm border
+            ${testMsg.tipo === 'ok' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+            {testMsg.tipo === 'ok' ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+            {testMsg.texto}
+          </div>
+        )}
       </Card>
 
       {/* Pasta automática */}

@@ -38,6 +38,8 @@ export interface Pedido {
   mesa_numero?:     number;   // vem do JOIN em listarPorData
   itens:            ItemPedido[];
   total:            number;
+  desconto?:        number;
+  acrescimo?:       number;
   status:           'aberto' | 'fechado' | 'cancelado';
   criadoEm?:        string;
   criado_em?:       string;
@@ -101,6 +103,22 @@ export interface RelatorioCaixa {
   saldoEsperado:      number;
   saldo_esperado?:    number;
   diferenca?:         number;
+  sangria?:           number;
+  suprimento?:        number;
+  totalDesconto?:     number;
+  totalAcrescimo?:    number;
+}
+
+export interface MovimentacaoCaixa {
+  id:           string;
+  caixa_id:     string;
+  pedido_id?:   string;
+  mesa_numero?: number;
+  tipo:         'venda' | 'abertura_caixa' | 'fechamento_caixa' | 'sangria' | 'suprimento';
+  valor:        number;
+  descricao?:   string;
+  operador?:    string;
+  criado_em:    string;
 }
 
 export interface DashboardStats {

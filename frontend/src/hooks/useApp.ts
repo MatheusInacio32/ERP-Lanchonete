@@ -8,6 +8,7 @@ import {
   ConfigService, CaixaService, RelatorioApiService,
 } from '../services/storage';
 import { setTema, getTema, type CorTema } from '../services/theme';
+import { log } from '../services/log';
 
 // ── Estado de loading global ──────────────────────────────────
 export interface AppState {
@@ -75,7 +76,9 @@ export function useApp() {
       setConfig(configData);
       setCaixaAtual(caixaData);
       setPedidosHoje(pedidosData);
+      log.info('App carregado', { mesas: mesasData.length, produtos: produtosData.length, caixaAberto: !!caixaData });
     } catch (e: any) {
+      log.error('Falha ao carregar app', e?.message);
       setErro(e.message ?? 'Erro ao conectar com o servidor');
     } finally {
       setLoading(false);
@@ -141,12 +144,14 @@ export function useApp() {
   // ── Mesas ─────────────────────────────────────────────────────
   const abrirMesa = useCallback(async (mesaId: string): Promise<Pedido> => {
     const pedido = await MesaService.abrir(mesaId);
+    log.info('Mesa aberta', { mesaId });
     await refreshMesas();
     return pedido;
   }, [refreshMesas]);
 
   const cancelarMesa = useCallback(async (mesaId: string) => {
     await MesaService.cancelar(mesaId);
+    log.warn('Mesa cancelada', { mesaId });
     await refreshMesas();
   }, [refreshMesas]);
 
@@ -183,9 +188,12 @@ export function useApp() {
     _pedidoId: string,
     mesaId: string,
     formaPagamento: FormaPagamento,
-    valorRecebido: number
+    valorRecebido: number,
+    desconto = 0,
+    acrescimo = 0
   ): Promise<Pedido> => {
-    const pedido = await PedidoService.fecharConta(mesaId, formaPagamento, valorRecebido);
+    const pedido = await PedidoService.fecharConta(mesaId, formaPagamento, valorRecebido, desconto, acrescimo);
+    log.info('Conta fechada', { mesaId, formaPagamento, total: Number(pedido.total), desconto, acrescimo });
     await Promise.all([refreshMesas(), refreshPedidos()]);
     return pedido;
   }, [refreshMesas, refreshPedidos]);
@@ -233,6 +241,7 @@ export function useApp() {
   // ── Caixa ──────────────────────────────────────────────────────
   const abrirCaixa = useCallback(async (operador: string, valorAbertura: number): Promise<Caixa> => {
     const caixa = await CaixaService.abrir(operador, valorAbertura);
+    log.info('Caixa aberto', { operador, valorAbertura });
     setCaixaAtual(caixa);
     return caixa;
   }, []);
@@ -241,6 +250,7 @@ export function useApp() {
     operador: string, valorContado: number, observacoes?: string
   ): Promise<RelatorioCaixa | undefined> => {
     const rel = await CaixaService.fechar(operador, valorContado, observacoes);
+    log.info('Caixa fechado', { operador, valorContado, diferenca: rel?.diferenca });
     setCaixaAtual(null);
     await refreshPedidos();
     return rel;
@@ -288,6 +298,10 @@ export function useApp() {
       const totalPedidos  = Number(raw.total_pedidos  ?? 0);
       const saldoEsperado = Number(raw.saldo_esperado ?? 0);
       const diferenca     = raw.diferenca != null ? Number(raw.diferenca) : undefined;
+      const sangria       = Number(raw.total_sangria    ?? 0);
+      const suprimento    = Number(raw.total_suprimento ?? 0);
+      const totalDesconto  = Number(raw.total_desconto  ?? 0);
+      const totalAcrescimo = Number(raw.total_acrescimo ?? 0);
 
       // Busca pedidos do caixa via endpoint dedicado (evita bug de timezone)
       let pedidosDoCaixa: Pedido[] = [];
@@ -296,7 +310,7 @@ export function useApp() {
         pedidosDoCaixa = relatorio?.pedidos ?? [];
       } catch {}
 
-      return { caixa, pedidos: pedidosDoCaixa, totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca };
+      return { caixa, pedidos: pedidosDoCaixa, totalVendas, totalPedidos, porFormaPagamento, saldoEsperado, diferenca, sangria, suprimento, totalDesconto, totalAcrescimo };
     } catch (e) {
       console.error('[useApp] gerarRelatorioCaixa erro:', e);
       return undefined;

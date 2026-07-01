@@ -143,9 +143,9 @@ export default function App() {
     }
   }, [mesaSelecionada, editarObservacao, recarregarPedido, showError]);
 
-  const handleFecharConta = useCallback(async (pedidoId: string, mesaId: string, forma: any, valorRecebido: number) => {
+  const handleFecharConta = useCallback(async (pedidoId: string, mesaId: string, forma: any, valorRecebido: number, desconto = 0, acrescimo = 0) => {
     try {
-      const fechado = await fecharConta(pedidoId, mesaId, forma, valorRecebido);
+      const fechado = await fecharConta(pedidoId, mesaId, forma, valorRecebido, desconto, acrescimo);
       fecharModal();
       return fechado;
     } catch (e: any) {

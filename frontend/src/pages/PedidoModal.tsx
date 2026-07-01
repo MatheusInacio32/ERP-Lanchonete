@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Plus, Minus, Trash2, Search, MessageSquare,
-  ShoppingBag, UtensilsCrossed, CreditCard, X,
+  ShoppingBag, CreditCard, X,
 } from 'lucide-react';
 import { Button, EmptyState, Modal } from '../components/ui';
 import { QuickCodeInput } from '../components/QuickCodeInput';
@@ -21,55 +21,42 @@ interface Props {
   onAlterarQuantidade: (pedidoId: string, itemId: string, delta: number) => void;
   onRemoverItem: (pedidoId: string, itemId: string) => void;
   onEditarObservacao: (pedidoId: string, itemId: string, obs: string) => void;
-  onFecharConta: (pedidoId: string, mesaId: string, forma: FormaPagamento, valorRecebido: number) => Promise<Pedido | undefined>;
+  onFecharConta: (pedidoId: string, mesaId: string, forma: FormaPagamento, valorRecebido: number, desconto?: number, acrescimo?: number) => Promise<Pedido | undefined>;
   config: { nomeEstabelecimento: string };
 }
 
-type Aba = 'lancamento' | 'cardapio' | 'fechar';
+type Aba = 'adicionar' | 'fechar';
 
 export function PedidoModal({
   mesa, pedido, produtos, onClose, onCancelarMesa,
   onAdicionarItem, onAlterarQuantidade, onRemoverItem, onEditarObservacao,
   onFecharConta, config,
 }: Props) {
-  const [aba, setAba] = useState<Aba>('lancamento');
+  const [aba, setAba] = useState<Aba>('adicionar');
   const [busca, setBusca] = useState('');
   const [catFiltro, setCatFiltro] = useState<string>('Todos');
   const [obsItemId, setObsItemId] = useState<string | null>(null);
   const [obsTexto, setObsTexto] = useState('');
-  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
   const [pendingProduto, setPendingProduto] = useState<Produto | null>(null);
   const [obsTemp, setObsTemp] = useState('');
 
-  // ESC fecha modal (cancela mesa vazia) ou limpa seleção
+  // ESC: fecha sub-modais, ou cancela mesa vazia / fecha o modal
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      if (obsItemId) { setObsItemId(null); return; }
-      if (pendingProduto) { setPendingProduto(null); return; }
-      if (selectedItemIds.size > 0) { setSelectedItemIds(new Set()); return; }
-      // Se mesa sem itens: cancela e libera
-      if (pedido && pedido.itens.length === 0 && mesa) {
-        onCancelarMesa(mesa.id);
-        onClose();
-        return;
-      }
+    if (e.key !== 'Escape') return;
+    if (obsItemId)      { setObsItemId(null); return; }
+    if (pendingProduto) { setPendingProduto(null); return; }
+    if (pedido && pedido.itens.length === 0 && mesa) {
+      onCancelarMesa(mesa.id);
       onClose();
+      return;
     }
-    if ((e.key === 'Delete') && selectedItemIds.size > 0 && aba === 'lancamento') {
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
-      e.preventDefault();
-      if (!pedido) return;
-      selectedItemIds.forEach((id) => onRemoverItem(pedido.id, id));
-      setSelectedItemIds(new Set());
-    }
-  }, [obsItemId, pendingProduto, selectedItemIds, pedido, mesa, aba, onCancelarMesa, onClose, onRemoverItem]);
+    onClose();
+  }, [obsItemId, pendingProduto, pedido, mesa, onCancelarMesa, onClose]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
-
-  useEffect(() => { setSelectedItemIds(new Set()); }, [aba]);
 
   if (!mesa || !pedido) return null;
 
@@ -100,75 +87,56 @@ export function PedidoModal({
     setObsTemp('');
   };
 
-  const toggleSelect = (itemId: string) => {
-    setSelectedItemIds((prev) => {
-      const next = new Set(prev);
-      next.has(itemId) ? next.delete(itemId) : next.add(itemId);
-      return next;
-    });
-  };
-
   const totalItens = pedido.itens.reduce((s, i) => s + i.quantidade, 0);
-  const hasSelection = selectedItemIds.size > 0;
   const mesaVazia = pedido.itens.length === 0;
 
   const TABS: { id: Aba; label: string; icon: React.ElementType }[] = [
-    { id: 'lancamento', label: 'Lançamento', icon: ShoppingBag },
-    { id: 'cardapio',   label: 'Cardápio',   icon: Search },
-    { id: 'fechar',     label: 'Fechar Conta', icon: CreditCard },
+    { id: 'adicionar', label: 'Adicionar',    icon: ShoppingBag },
+    { id: 'fechar',    label: 'Fechar Conta',  icon: CreditCard },
   ];
 
   return (
     <>
-      {/* Backdrop */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-2 md:p-6">
         <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => {
-          if (mesaVazia) { onCancelarMesa(mesa.id); }
+          if (mesaVazia) onCancelarMesa(mesa.id);
           onClose();
         }} />
 
-        {/* Modal — extra-wide */}
         <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[95vh] flex flex-col overflow-hidden">
 
           {/* ── Header ─────────────────────────────────────── */}
-          <div className="bg-gradient-to-r from-primary-700 to-primary-800 px-6 py-4 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-4">
-              <div className="bg-white/10 rounded-xl px-4 py-2">
-                <span className="text-4xl font-black text-white">{mesa.numero}</span>
+          <div className="bg-gradient-to-r from-primary-700 to-primary-800 px-4 sm:px-6 py-3.5 flex items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="bg-white/10 rounded-xl px-3 py-1.5 shrink-0">
+                <span className="text-3xl font-black text-white">{mesa.numero}</span>
               </div>
-              <div>
-                <p className="text-white font-bold text-lg">Mesa {mesa.numero}</p>
-                <div className="flex items-center gap-3 text-primary-300 text-sm">
-                  <span className="flex items-center gap-1">
-                    <UtensilsCrossed size={13} />
-                    {formatHora(mesa.abertaEm)}
-                  </span>
+              <div className="min-w-0">
+                <p className="text-white font-bold text-base leading-tight">Mesa {mesa.numero}</p>
+                <div className="flex items-center gap-2 text-primary-300 text-xs">
+                  <span>{formatHora(mesa.abertaEm)}</span>
                   <span>·</span>
-                  <span>{totalItens} itens</span>
-                  <span>·</span>
-                  <span className="text-white font-bold text-base">{formatMoeda(pedido.total)}</span>
+                  <span>{totalItens} {totalItens === 1 ? 'item' : 'itens'}</span>
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-white font-black text-lg hidden sm:block">{formatMoeda(pedido.total)}</span>
               {mesaVazia && (
                 <button
                   onClick={() => { onCancelarMesa(mesa.id); onClose(); }}
                   className="text-xs bg-white/10 hover:bg-white/20 text-primary-200 hover:text-white px-3 py-1.5 rounded-lg transition-colors font-medium"
                 >
-                  Cancelar mesa
+                  Cancelar
                 </button>
               )}
-              <button
-                onClick={onClose}
-                className="text-primary-300 hover:text-white transition-colors p-1.5 hover:bg-white/10 rounded-lg"
-              >
+              <button onClick={onClose} className="text-primary-300 hover:text-white transition-colors p-1.5 hover:bg-white/10 rounded-lg">
                 <X size={20} />
               </button>
             </div>
           </div>
 
-          {/* ── Tabs ───────────────────────────────────────── */}
+          {/* ── Abas ───────────────────────────────────────── */}
           <div className="flex border-b border-primary-100 bg-primary-50 shrink-0">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
@@ -179,109 +147,79 @@ export function PedidoModal({
                     ? 'text-accent-600 border-b-2 border-accent-500 bg-white'
                     : 'text-primary-500 hover:text-primary-700 hover:bg-primary-100'}`}
               >
-                <Icon size={15} />
-                <span className="hidden sm:inline">{label}</span>
+                <Icon size={16} />
+                {label}
               </button>
             ))}
           </div>
 
-          {/* ── Corpo (2 colunas no desktop) ─────────────── */}
+          {/* ── Corpo (2 colunas no desktop, empilha no mobile) ── */}
           <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
 
-            {/* ── COLUNA ESQUERDA: Itens do pedido (sempre visível) */}
-            <div className="w-full md:w-72 lg:w-80 border-r border-primary-100 flex flex-col bg-white shrink-0">
-              <div className="px-4 py-3 border-b border-primary-100 flex items-center justify-between">
-                <span className="text-xs font-bold text-primary-500 uppercase tracking-wider">Pedido atual</span>
-                {hasSelection && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-accent-600">{selectedItemIds.size} sel.</span>
-                    <button
-                      onClick={() => {
-                        selectedItemIds.forEach((id) => onRemoverItem(pedido.id, id));
-                        setSelectedItemIds(new Set());
-                      }}
-                      className="flex items-center gap-1 text-xs bg-red-500 text-white px-2 py-0.5 rounded-lg font-medium hover:bg-red-600"
-                    >
-                      <Trash2 size={10} /> Del
-                    </button>
-                  </div>
-                )}
+            {/* ── Lista de itens (Pedido atual) ── */}
+            <div className="w-full md:w-72 lg:w-80 border-b md:border-b-0 md:border-r border-primary-100 flex flex-col bg-white shrink-0 max-h-44 md:max-h-none">
+              <div className="px-4 py-2.5 border-b border-primary-100 shrink-0">
+                <span className="text-xs font-bold text-primary-500 uppercase tracking-wider">Itens do pedido</span>
               </div>
 
               <div className="flex-1 overflow-y-auto">
                 {pedido.itens.length === 0 ? (
-                  <div className="flex items-center justify-center h-full py-8 text-primary-300">
+                  <div className="flex items-center justify-center h-full py-6 text-primary-300">
                     <div className="text-center">
-                      <ShoppingBag size={32} className="mx-auto mb-2 opacity-30" />
-                      <p className="text-xs">Nenhum item</p>
-                      <p className="text-xs mt-1 text-primary-200">ESC = cancelar mesa</p>
+                      <ShoppingBag size={28} className="mx-auto mb-2 opacity-30" />
+                      <p className="text-xs">Nenhum item ainda</p>
                     </div>
                   </div>
                 ) : (
                   <div className="p-2 space-y-1.5">
-                    {!hasSelection && (
-                      <p className="text-xs text-primary-300 px-1 pb-1 italic">Clique p/ selecionar · Delete p/ remover</p>
-                    )}
-                    {pedido.itens.map((item) => {
-                      const sel = selectedItemIds.has(item.id);
-                      return (
-                        <div
-                          key={item.id}
-                          onClick={() => toggleSelect(item.id)}
-                          className={`flex items-start gap-2 p-2.5 rounded-xl border-2 cursor-pointer transition-all select-none
-                            ${sel
-                              ? 'border-accent-400 bg-accent-50'
-                              : 'border-transparent bg-primary-50 hover:border-primary-200'}`}
-                        >
-                          {/* Checkbox */}
-                          <div className={`mt-0.5 w-3.5 h-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-all
-                            ${sel ? 'border-accent-500 bg-accent-500' : 'border-primary-300 bg-white'}`}>
-                            {sel && <svg width="7" height="7" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                          </div>
-
-                          {/* Qty */}
-                          <div
-                            className="flex items-center gap-0.5 bg-white rounded-lg border border-primary-200 p-0.5 shrink-0"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button onClick={() => onAlterarQuantidade(pedido.id, item.id, -1)}
-                              className="w-5 h-5 rounded hover:bg-primary-100 flex items-center justify-center text-primary-600">
-                              <Minus size={9} />
-                            </button>
-                            <span className="text-xs font-bold w-3.5 text-center">{item.quantidade}</span>
-                            <button onClick={() => onAlterarQuantidade(pedido.id, item.id, 1)}
-                              className="w-5 h-5 rounded hover:bg-accent-100 flex items-center justify-center text-accent-600">
-                              <Plus size={9} />
-                            </button>
-                          </div>
-
-                          {/* Info */}
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-semibold text-primary-900 truncate">{item.nomeProduto}</p>
-                            {item.observacao && (
-                              <p className="text-xs text-accent-500 truncate">↳ {item.observacao}</p>
-                            )}
-                          </div>
-
-                          {/* Valor + obs */}
-                          <div className="text-right shrink-0" onClick={(e) => e.stopPropagation()}>
-                            <p className="text-xs font-bold text-accent-600">{formatMoeda(item.subtotal)}</p>
-                            <button
-                              onClick={() => { setObsItemId(item.id); setObsTexto(item.observacao); }}
-                              className="text-primary-300 hover:text-accent-500 mt-0.5"
-                              title="Observação"
-                            >
-                              <MessageSquare size={11} />
-                            </button>
-                          </div>
+                    {pedido.itens.map((item) => (
+                      <div key={item.id} className="flex items-center gap-2 p-2 rounded-xl bg-primary-50">
+                        {/* Quantidade */}
+                        <div className="flex items-center gap-0.5 bg-white rounded-lg border border-primary-200 shrink-0">
+                          <button onClick={() => onAlterarQuantidade(pedido.id, item.id, -1)}
+                            className="w-7 h-7 rounded-l-lg hover:bg-primary-100 flex items-center justify-center text-primary-600">
+                            <Minus size={13} />
+                          </button>
+                          <span className="text-sm font-bold w-5 text-center">{item.quantidade}</span>
+                          <button onClick={() => onAlterarQuantidade(pedido.id, item.id, 1)}
+                            className="w-7 h-7 rounded-r-lg hover:bg-accent-100 flex items-center justify-center text-accent-600">
+                            <Plus size={13} />
+                          </button>
                         </div>
-                      );
-                    })}
+
+                        {/* Nome + observação */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-primary-900 truncate leading-tight">{item.nomeProduto ?? (item as any).nome_produto}</p>
+                          <p className="text-xs text-accent-600 font-bold">{formatMoeda(item.subtotal)}</p>
+                          {item.observacao && (
+                            <p className="text-xs text-primary-400 truncate">↳ {item.observacao}</p>
+                          )}
+                        </div>
+
+                        {/* Ações */}
+                        <div className="flex flex-col gap-0.5 shrink-0">
+                          <button
+                            onClick={() => { setObsItemId(item.id); setObsTexto(item.observacao); }}
+                            className="w-7 h-7 rounded-lg hover:bg-primary-100 text-primary-400 hover:text-accent-500 flex items-center justify-center"
+                            title="Observação"
+                          >
+                            <MessageSquare size={13} />
+                          </button>
+                          <button
+                            onClick={() => onRemoverItem(pedido.id, item.id)}
+                            className="w-7 h-7 rounded-lg hover:bg-red-50 text-primary-400 hover:text-red-500 flex items-center justify-center"
+                            title="Remover"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
 
-              {/* Rodapé com total */}
+              {/* Total */}
               {pedido.itens.length > 0 && (
                 <div className="px-4 py-3 border-t border-primary-100 bg-primary-50 flex justify-between items-center shrink-0">
                   <span className="text-xs font-bold text-primary-600 uppercase tracking-wider">Total</span>
@@ -290,39 +228,42 @@ export function PedidoModal({
               )}
             </div>
 
-            {/* ── COLUNA DIREITA: Conteúdo das abas ────────── */}
+            {/* ── Conteúdo da aba ── */}
             <div className="flex-1 overflow-y-auto">
 
-              {/* LANÇAMENTO (código + foco automático) */}
-              {aba === 'lancamento' && (
-                <div className="p-5">
+              {/* ADICIONAR — código rápido + cardápio */}
+              {aba === 'adicionar' && (
+                <div className="p-4 space-y-4">
+                  {/* Lançamento rápido por código */}
                   <QuickCodeInput
                     produtos={produtos}
                     onAdicionar={handleQuickAdd}
                     autoFocus={true}
                   />
-                </div>
-              )}
 
-              {/* CARDÁPIO */}
-              {aba === 'cardapio' && (
-                <div className="p-5 space-y-3">
+                  {/* Divisor */}
+                  <div className="flex items-center gap-3 text-xs text-primary-400 font-medium">
+                    <div className="flex-1 h-px bg-primary-100" />
+                    ou escolha no cardápio
+                    <div className="flex-1 h-px bg-primary-100" />
+                  </div>
+
+                  {/* Cardápio */}
                   <div className="relative">
                     <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-primary-400" />
                     <input
-                      autoFocus
                       value={busca}
                       onChange={(e) => setBusca(e.target.value)}
                       placeholder="Buscar por nome ou código..."
                       className="w-full pl-9 pr-3 py-2 border border-primary-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-accent-400 bg-primary-50"
                     />
                   </div>
-                  <div className="flex gap-1.5 flex-wrap">
+                  <div className="flex gap-1.5 overflow-x-auto scrollbar-hide">
                     {['Todos', ...CATEGORIAS].map((cat) => (
                       <button
                         key={cat}
                         onClick={() => setCatFiltro(cat)}
-                        className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors whitespace-nowrap
+                        className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors whitespace-nowrap shrink-0
                           ${catFiltro === cat
                             ? 'bg-accent-500 text-white'
                             : 'bg-primary-100 text-primary-600 hover:bg-primary-200'}`}
@@ -339,16 +280,16 @@ export function PedidoModal({
                       <button
                         key={p.id}
                         onClick={() => { setPendingProduto(p); setObsTemp(''); }}
-                        className="w-full flex items-center justify-between py-3 px-4 rounded-xl bg-primary-50 hover:bg-accent-50 border border-primary-100 hover:border-accent-200 transition-all group text-left"
+                        className="w-full flex items-center justify-between py-2.5 px-3 rounded-xl bg-primary-50 hover:bg-accent-50 border border-primary-100 hover:border-accent-200 transition-all group text-left"
                       >
-                        <div>
+                        <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="text-xs bg-primary-200 text-primary-600 px-1.5 py-0.5 rounded font-mono font-bold">{p.codigo}</span>
-                            <p className="text-sm font-semibold text-primary-900 group-hover:text-accent-700">{p.nome}</p>
+                            <span className="text-xs bg-primary-200 text-primary-600 px-1.5 py-0.5 rounded font-mono font-bold shrink-0">{p.codigo}</span>
+                            <p className="text-sm font-semibold text-primary-900 group-hover:text-accent-700 truncate">{p.nome}</p>
                           </div>
                           <p className="text-xs text-primary-500 mt-0.5">{p.categoria}</p>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
                           <span className="text-sm font-bold text-accent-600">{formatMoeda(p.preco)}</span>
                           <Plus size={16} className="text-accent-500" />
                         </div>
@@ -364,9 +305,8 @@ export function PedidoModal({
                   pedido={pedido}
                   mesa={mesa}
                   config={config}
-                  onFechar={async (forma, valor) => {
-                    // App.tsx já chama fecharModal() internamente ao fechar com sucesso
-                    await onFecharConta(pedido.id, mesa.id, forma, valor);
+                  onFechar={async (forma, valor, desconto, acrescimo) => {
+                    await onFecharConta(pedido.id, mesa.id, forma, valor, desconto, acrescimo);
                   }}
                 />
               )}

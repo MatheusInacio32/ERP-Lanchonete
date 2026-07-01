@@ -1,7 +1,7 @@
 import { query, withTransaction } from '../config/database';
 import { AppError } from '../middleware/errorHandler';
 import { logger } from '../utils/logger';
-import type { Caixa, AbrirCaixaDTO, FecharCaixaDTO, ResumoCaixa, Dashboard } from '../types';
+import type { Caixa, AbrirCaixaDTO, FecharCaixaDTO, ResumoCaixa, Dashboard, MovimentacaoCaixa } from '../types';
 
 export const CaixaService = {
   async getAtual(): Promise<Caixa | null> {
@@ -16,6 +16,44 @@ export const CaixaService = {
     const { rows } = await query<Caixa>('SELECT * FROM caixas WHERE id=$1', [id]);
     if (!rows[0]) throw new AppError('Caixa não encontrado', 404);
     return rows[0];
+  },
+
+  // ── Sangria / Suprimento — movimentação manual de dinheiro ───
+  async registrarMovimentacao(
+    tipo: 'sangria' | 'suprimento', valor: number, descricao: string, operador: string
+  ): Promise<MovimentacaoCaixa> {
+    if (tipo !== 'sangria' && tipo !== 'suprimento') {
+      throw new AppError('Tipo inválido — use "sangria" ou "suprimento"', 400);
+    }
+    if (!(valor > 0)) throw new AppError('Informe um valor maior que zero', 400);
+
+    const atual = await CaixaService.getAtual();
+    if (!atual) throw new AppError('Nenhum caixa aberto para registrar a movimentação', 404);
+
+    const desc = descricao?.trim() || (tipo === 'sangria' ? 'Sangria' : 'Suprimento');
+    const { rows } = await query<MovimentacaoCaixa>(
+      `INSERT INTO movimentacoes_caixa (caixa_id, tipo, valor, descricao, operador)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [atual.id, tipo, valor, desc, operador?.trim() || null]
+    );
+    const emoji = tipo === 'sangria' ? '💸 SANGRIA' : '💰 SUPRIMENTO';
+    logger.info(`[Caixa] ${emoji} R$ ${Number(valor).toFixed(2)} — "${desc}" por "${operador ?? '—'}"`);
+    return rows[0];
+  },
+
+  // ── Extrato: todas as movimentações do caixa em ordem ────────
+  async getExtrato(caixaId: string): Promise<MovimentacaoCaixa[]> {
+    const { rows } = await query<MovimentacaoCaixa>(
+      `SELECT mc.*, COALESCE(p.mesa_numero, m.numero) AS mesa_numero
+       FROM movimentacoes_caixa mc
+       LEFT JOIN pedidos p ON p.id = mc.pedido_id
+       LEFT JOIN mesas   m ON m.id = p.mesa_id
+       WHERE mc.caixa_id = $1
+       ORDER BY mc.criado_em ASC`,
+      [caixaId]
+    );
+    logger.info(`[Caixa] Extrato do caixa ${caixaId.slice(0, 8)} — ${rows.length} movimentações`);
+    return rows;
   },
 
   async abrir(dto: AbrirCaixaDTO): Promise<Caixa> {

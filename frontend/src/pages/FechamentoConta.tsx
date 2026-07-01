@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import { Printer, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Printer, FileText, CheckCircle2, AlertCircle, Tag } from 'lucide-react';
 import { Button } from '../components/ui';
-import { formatMoeda, calcularTroco, gerarPDF, imprimirConta } from '../utils';
+import { formatMoeda, gerarPDF, imprimirConta } from '../utils';
 import type { Pedido, Mesa, FormaPagamento } from '../types';
 
 interface Props {
   pedido: Pedido;
   mesa: Mesa;
   config: { nomeEstabelecimento: string; telefone?: string };
-  onFechar: (forma: FormaPagamento, valorRecebido: number) => void;
+  onFechar: (forma: FormaPagamento, valorRecebido: number, desconto: number, acrescimo: number) => void;
 }
 
 const FORMAS: { id: FormaPagamento; label: string; icon: string; desc?: string }[] = [
@@ -19,24 +19,43 @@ const FORMAS: { id: FormaPagamento; label: string; icon: string; desc?: string }
   { id: 'voucher',  label: 'Voucher',   icon: '🎫', desc: 'Vale-refeição' },
 ];
 
+type Tipo = 'rs' | 'pct';
+
 export function FechamentoConta({ pedido, mesa, config, onFechar }: Props) {
-  const [forma, setForma]     = useState<FormaPagamento>('dinheiro');
+  const [forma, setForma]       = useState<FormaPagamento>('dinheiro');
   const [valorStr, setValorStr] = useState('');
-  const [erro, setErro]       = useState('');
+  const [erro, setErro]         = useState('');
+  const [ajustes, setAjustes]   = useState(false);
+  const [descStr, setDescStr]   = useState('');
+  const [descTipo, setDescTipo] = useState<Tipo>('rs');
+  const [acrStr, setAcrStr]     = useState('');
+  const [acrTipo, setAcrTipo]   = useState<Tipo>('rs');
+
+  const subtotal = Number(pedido.total);
+
+  // converte campo (R$ ou %) para valor em R$ sobre o subtotal
+  const emReais = (str: string, tipo: Tipo) => {
+    const n = parseFloat(str.replace(',', '.')) || 0;
+    return tipo === 'pct' ? (subtotal * n) / 100 : n;
+  };
+  const descontoRS  = Math.min(subtotal, Math.max(0, emReais(descStr, descTipo)));
+  const acrescimoRS = Math.max(0, emReais(acrStr, acrTipo));
+  const totalFinal  = Math.max(0, subtotal - descontoRS + acrescimoRS);
+  const temAjuste   = descontoRS > 0 || acrescimoRS > 0;
 
   const isDinheiro = forma === 'dinheiro';
   const valorRecebido = parseFloat(valorStr.replace(',', '.')) || 0;
-  const troco = calcularTroco(pedido.total, valorRecebido);
-  const valorInsuficiente = isDinheiro && valorStr !== '' && valorRecebido < pedido.total;
+  const troco = Math.max(0, valorRecebido - totalFinal);
+  const valorInsuficiente = isDinheiro && valorStr !== '' && valorRecebido < totalFinal;
 
   const handleFechar = () => {
     if (isDinheiro) {
       const v = parseFloat(valorStr.replace(',', '.'));
       if (isNaN(v) || v <= 0) { setErro('Informe o valor recebido'); return; }
-      if (v < pedido.total)   { setErro('Valor insuficiente para cobrir o total'); return; }
+      if (v < totalFinal)     { setErro('Valor insuficiente para cobrir o total'); return; }
     }
     setErro('');
-    onFechar(forma, isDinheiro ? valorRecebido : pedido.total);
+    onFechar(forma, isDinheiro ? valorRecebido : totalFinal, descontoRS, acrescimoRS);
   };
 
   return (
@@ -55,11 +74,57 @@ export function FechamentoConta({ pedido, mesa, config, onFechar }: Props) {
             </div>
           ))}
         </div>
-        <div className="flex justify-between items-center mt-3 pt-3 border-t border-primary-200">
-          <span className="font-bold text-primary-700 text-base">Total</span>
-          <span className="text-2xl font-black text-accent-600">{formatMoeda(pedido.total)}</span>
+
+        {/* Totais */}
+        <div className="mt-3 pt-3 border-t border-primary-200 space-y-1">
+          {temAjuste && (
+            <>
+              <div className="flex justify-between text-sm text-primary-500">
+                <span>Subtotal</span><span>{formatMoeda(subtotal)}</span>
+              </div>
+              {descontoRS > 0 && (
+                <div className="flex justify-between text-sm text-red-500">
+                  <span>Desconto</span><span>−{formatMoeda(descontoRS)}</span>
+                </div>
+              )}
+              {acrescimoRS > 0 && (
+                <div className="flex justify-between text-sm text-green-600">
+                  <span>Acréscimo</span><span>+{formatMoeda(acrescimoRS)}</span>
+                </div>
+              )}
+            </>
+          )}
+          <div className="flex justify-between items-center">
+            <span className="font-bold text-primary-700 text-base">Total</span>
+            <span className="text-2xl font-black text-accent-600">{formatMoeda(totalFinal)}</span>
+          </div>
         </div>
       </div>
+
+      {/* Desconto / Acréscimo */}
+      {!ajustes ? (
+        <button
+          onClick={() => setAjustes(true)}
+          className="text-sm text-accent-600 hover:text-accent-700 font-medium flex items-center gap-1.5"
+        >
+          <Tag size={14} /> Aplicar desconto ou acréscimo
+        </button>
+      ) : (
+        <div className="space-y-3 bg-primary-50 rounded-xl p-3">
+          <CampoAjuste label="Desconto"  valor={descStr} setValor={(v) => { setDescStr(v); setErro(''); }} tipo={descTipo} setTipo={setDescTipo} />
+          <CampoAjuste label="Acréscimo / taxa de serviço" valor={acrStr} setValor={(v) => { setAcrStr(v); setErro(''); }} tipo={acrTipo} setTipo={setAcrTipo} />
+          <div className="flex gap-2 flex-wrap pt-0.5">
+            <button onClick={() => { setAcrStr('10'); setAcrTipo('pct'); }}
+              className="px-2.5 py-1 text-xs bg-white border border-primary-200 hover:border-accent-300 rounded-lg font-medium text-primary-600">
+              + 10% serviço
+            </button>
+            <button onClick={() => { setDescStr(''); setAcrStr(''); setDescTipo('rs'); setAcrTipo('rs'); setAjustes(false); }}
+              className="px-2.5 py-1 text-xs bg-white border border-primary-200 hover:border-red-300 rounded-lg font-medium text-primary-500">
+              Remover
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Formas de pagamento */}
       <div>
@@ -114,7 +179,7 @@ export function FechamentoConta({ pedido, mesa, config, onFechar }: Props) {
           {valorInsuficiente && (
             <div className="bg-accent-50 border border-accent-200 rounded-xl p-3 flex items-center gap-2 text-accent-600">
               <AlertCircle size={16} />
-              <p className="text-sm font-medium">Faltam {formatMoeda(pedido.total - valorRecebido)}</p>
+              <p className="text-sm font-medium">Faltam {formatMoeda(totalFinal - valorRecebido)}</p>
             </div>
           )}
         </div>
@@ -137,8 +202,36 @@ export function FechamentoConta({ pedido, mesa, config, onFechar }: Props) {
       {/* Fechar conta */}
       <Button className="w-full" size="lg" variant="success" onClick={handleFechar} disabled={pedido.itens.length === 0}>
         <CheckCircle2 size={18} />
-        Fechar Conta · {formatMoeda(pedido.total)}
+        Fechar Conta · {formatMoeda(totalFinal)}
       </Button>
+    </div>
+  );
+}
+
+// Campo numérico com alternância R$ / %
+function CampoAjuste({ label, valor, setValor, tipo, setTipo }: {
+  label: string; valor: string; setValor: (v: string) => void; tipo: Tipo; setTipo: (t: Tipo) => void;
+}) {
+  return (
+    <div>
+      <label className="text-xs font-medium text-primary-600 block mb-1">{label}</label>
+      <div className="flex gap-2">
+        <input
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          placeholder="0" inputMode="decimal"
+          className="flex-1 min-w-0 border border-primary-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-accent-400"
+        />
+        <div className="flex rounded-lg overflow-hidden border border-primary-200 shrink-0">
+          {(['rs', 'pct'] as Tipo[]).map((t) => (
+            <button key={t} onClick={() => setTipo(t)}
+              className={`px-3 py-2 text-sm font-bold transition-colors
+                ${tipo === t ? 'bg-accent-500 text-white' : 'bg-white text-primary-400 hover:text-primary-600'}`}>
+              {t === 'rs' ? 'R$' : '%'}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

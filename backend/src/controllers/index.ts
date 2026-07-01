@@ -4,6 +4,7 @@ import { ProdutoService  } from '../services/produtoService';
 import { MesaService     } from '../services/mesaService';
 import { PedidoService   } from '../services/pedidoService';
 import { CaixaService    } from '../services/caixaService';
+import { ImpressaoService } from '../services/impressaoService';
 import { query           } from '../config/database';
 import { Configuracao    } from '../types';
 
@@ -197,6 +198,27 @@ export const CaixaController = {
     } catch (e) { next(e); }
   },
 
+  // Sangria / Suprimento
+  async registrarMovimentacao(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { tipo, valor, descricao, operador } = req.body;
+      const mov = await CaixaService.registrarMovimentacao(tipo, Number(valor), descricao, operador);
+      created(res, mov, tipo === 'sangria' ? 'Sangria registrada' : 'Suprimento registrado');
+    } catch (e) { next(e); }
+  },
+
+  // Extrato do caixa (movimentações em ordem cronológica)
+  async getExtrato(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = req.params.id === 'atual'
+        ? (await CaixaService.getAtual())?.id
+        : req.params.id;
+      if (!id) throw new AppError('Nenhum caixa aberto', 404);
+      const extrato = await CaixaService.getExtrato(id);
+      ok(res, extrato);
+    } catch (e) { next(e); }
+  },
+
   async listarPorData(req: Request, res: Response, next: NextFunction) {
     try {
       const data = (req.query.data as string) || localDate();
@@ -257,6 +279,30 @@ export const ConfiguracaoController = {
       }
 
       ok(res, rows[0], 'Configurações atualizadas');
+    } catch (e) { next(e); }
+  },
+};
+
+// ── IMPRESSÃO (silenciosa, sem Ctrl+P) ────────────────────────
+export const ImpressaoController = {
+  // GET /impressao/impressoras — lista as impressoras desta máquina
+  async listar(_req: Request, res: Response, next: NextFunction) {
+    try {
+      ok(res, await ImpressaoService.listar());
+    } catch (e) { next(e); }
+  },
+
+  // POST /impressao/imprimir?impressora=NOME — corpo = PDF binário cru
+  async imprimir(req: Request, res: Response, next: NextFunction) {
+    try {
+      const impressora = String(req.query.impressora ?? '').trim();
+      if (!impressora) throw new AppError('Informe a impressora (?impressora=)', 400);
+      const buffer = req.body as Buffer;
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        throw new AppError('PDF vazio ou inválido', 400);
+      }
+      await ImpressaoService.imprimirPdf(buffer, impressora);
+      ok(res, { impresso: true, impressora, bytes: buffer.length }, 'Enviado para impressão');
     } catch (e) { next(e); }
   },
 };
